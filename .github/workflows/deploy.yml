@@ -25,18 +25,12 @@ jobs:
 
       - name: إنشاء config.js من الأسرار
         env:
-          FIREBASE_CONFIG: ${{ secrets.FIREBASE_CONFIG }}
-          APP_ADMINS: ${{ secrets.APP_ADMINS }}
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
         run: |
-          if [ -z "$FIREBASE_CONFIG" ]; then echo "::error::أضف السر FIREBASE_CONFIG في إعدادات المستودع"; exit 1; fi
+          if [ -z "$APPS_SCRIPT_URL" ]; then echo "::error::أضف السر APPS_SCRIPT_URL في إعدادات المستودع"; exit 1; fi
           mkdir -p site
           cp index.html app.js site/
-          node -e '
-            const cfg = JSON.parse(process.env.FIREBASE_CONFIG);
-            const admins = (process.env.APP_ADMINS || "").split(",").map(s => s.trim()).filter(Boolean);
-            require("fs").writeFileSync("site/config.js",
-              "window.FIREBASE_CONFIG = " + JSON.stringify(cfg) + ";\nwindow.APP_ADMINS = " + JSON.stringify(admins) + ";\n");
-          '
+          node -e 'require("fs").writeFileSync("site/config.js", "window.APP_CONFIG = " + JSON.stringify({ scriptUrl: process.env.APPS_SCRIPT_URL.trim() }) + ";\n");'
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

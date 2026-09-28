@@ -442,32 +442,72 @@ async function exportWord(single, btn){
 
 let REQS = [];
 
-/* ---------- Firebase: الدخول والصلاحيات ---------- */
+/* ---------- الاتصال بخادم Google Apps Script ---------- */
 function saveFile(filename, blob){
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
-let AUTH = null, TEACH = [];
-const subjectsOf = t => C.filter(c => c.teacher === t).map(c => c.id);
-function showGate(html){ $('#app').hidden = true; const g = $('#gate'); g.hidden = false; g.innerHTML = html; }
+let CODE = null, TEACH = [];
+const lsGet = k => { try { return localStorage.getItem(k); } catch(e){ return null; } };
+const lsSet = (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch(e){} };
 
-function gateLogin(msg){
-  showGate(`<h2>تسجيل الدخول</h2><p>التطبيق مخصص لتدريسيي مواد المرحلة الثانية. سجّل الدخول بحساب Google المرتبط ببريدك المعتمد في القسم.</p>
-    <form id="loginForm"><button class="btn primary" type="submit">الدخول بحساب Google</button></form><p id="gateMsg" style="color:var(--bad)"></p>`);
-  if (msg) $('#gateMsg').textContent = msg;
-  $('#loginForm').addEventListener('submit', async e => {
-    e.preventDefault();
-    try { await AUTH.signInWithPopup(new firebase.auth.GoogleAuthProvider()); }
-    catch(err){ $('#gateMsg').textContent = err && err.code === 'auth/popup-blocked' ? 'المتصفح منع نافذة الدخول. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مجدداً.' : 'لم يكتمل تسجيل الدخول. حاول مجدداً.'; }
+async function api(action, payload = {}){
+  const res = await fetch(window.APP_CONFIG.scriptUrl, {
+    method: 'POST', redirect: 'follow',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // يتجنب طلب preflight
+    body: JSON.stringify({ action, code: CODE, ...payload }),
   });
+  const out = await res.json();
+  if (!out.ok){ const e = new Error(out.error || 'server'); e.code = out.error === 'forbidden' ? 'permission-denied' : out.error; throw e; }
+  return out;
 }
-function gateDenied(email){
-  showGate(`<h2>لا تملك صلاحية الدخول</h2><p>الحساب <span class="mail"></span> غير مسجّل ضمن تدريسيي المرحلة الثانية.</p>
-    <p>إذا كنت تدريسياً في القسم فاطلب من مدير التطبيق إضافة بريدك.</p><form id="outForm"><button class="btn" type="submit">الدخول بحساب آخر</button></form>`);
-  $('#gate .mail').textContent = email;
-  $('#outForm').addEventListener('submit', e => { e.preventDefault(); AUTH.signOut(); });
+// واجهة صغيرة تستعملها دالة الحفظ في منطق التطبيق
+db = { doc: path => ({ set: body => api('save', { id: path.split('/')[1], m: body.m }) }) };
+
+function showGate(html){ $('#app').hidden = true; const g = $('#gate'); g.hidden = false; g.innerHTML = html; }
+function gateLogin(msg){
+  showGate(`<h2>الدخول برمز التدريسي</h2><p>التطبيق مخصص لتدريسيي مواد المرحلة الثانية. أدخل رمز الدخول الشخصي الذي سلّمه لك مدير التطبيق.</p>
+    <form id="loginForm"><input id="codeIn" autocomplete="off" required placeholder="XXXX-XXXX-XXXX" dir="ltr" style="font:inherit;padding:8px 12px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);letter-spacing:1px;text-align:center">
+    <button class="btn primary" type="submit">دخول</button></form>
+    <p><label class="who"><input type="checkbox" id="remember" checked> تذكّر الرمز على هذا الجهاز</label></p><p id="gateMsg" style="color:var(--bad)"></p>`);
+  if (msg) $('#gateMsg').textContent = msg;
+  $('#loginForm').addEventListener('submit', e => { e.preventDefault(); login($('#codeIn').value.trim().toUpperCase(), $('#remember').checked); });
+}
+
+async function login(code, remember){
+  CODE = code;
+  showGate('<h2>جارٍ التحقق…</h2>');
+  try {
+    const out = await api('load');
+    if (remember) lsSet('att-code', code);
+    const me = out.me;
+    ME = { owner: me.admin, all: me.all, teacher: me.teacher, email: '' };
+    applyLoad(out);
+    enterApp();
+    setSync('live', 'محفوظ ومتزامن');
+    setInterval(refresh, 30000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  } catch(err){
+    CODE = null; lsSet('att-code', null);
+    gateLogin(err.message === 'bad_code' ? 'الرمز غير صحيح.' : 'تعذّر الاتصال بالخادم. تحقق من الإنترنت وحاول مجدداً.');
+  }
+}
+function applyLoad(out){
+  ROSTER = out.roster || [];
+  const fresh = {};
+  (out.att || []).forEach(r => fresh[r.id] = { m: r.m });
+  for (const id in fresh) if (!dirty.has(id)) data[id] = fresh[id];
+  for (const id in data) if (!(id in fresh) && !dirty.has(id)) delete data[id];
+}
+let refreshing = false;
+async function refresh(){
+  if (refreshing || document.hidden || dirty.size) return;
+  refreshing = true;
+  try { applyLoad(await api('load')); if (!dirty.size) setSync('live', 'محفوظ ومتزامن'); render(); }
+  catch(e){ setSync('off', 'تعذّر التحديث من الخادم'); }
+  finally { refreshing = false; }
 }
 
 function enterApp(){
@@ -475,92 +515,57 @@ function enterApp(){
   const uc = $('#userchip'); uc.hidden = false;
   uc.innerHTML = '<span></span><b></b><button class="btn ghost" id="signOut" type="button">خروج</button>';
   uc.children[0].textContent = ME.owner ? 'مدير التطبيق' : (ME.teacher === HEAD_TEACHER ? 'رئيس القسم' : 'التدريسي');
-  uc.children[1].textContent = ' ' + (ME.teacher || ME.email);
-  $('#signOut').onclick = () => AUTH.signOut().then(() => location.reload());
-  if (!visible().some(c => c.id === state.cid)) { state.cid = visible()[0].id; }
+  uc.children[1].textContent = ' ' + (ME.teacher || '');
+  $('#signOut').onclick = () => { lsSet('att-code', null); location.reload(); };
+  if (!visible().some(c => c.id === state.cid)) state.cid = visible()[0].id;
   state.week = defaultWeek(C.find(c => c.id === state.cid));
+  if (ME.owner) { $('#tabAdm').hidden = false; loadTeachers(); }
   render();
 }
 
-let unsubs = [];
-function onAtt(snap){
-  snap.docChanges().forEach(ch => {
-    const id = ch.doc.id; if (dirty.has(id)) return;
-    if (ch.type === 'removed') delete data[id]; else data[id] = ch.doc.data();
-  });
-  if (!dirty.size) setSync('live', 'محفوظ ومتزامن');
-  render();
-}
-function subscribe(){
-  unsubs.forEach(u => u()); unsubs = [];
-  const err = () => setSync('off', 'انقطع الاتصال، أعد تحميل الصفحة');
-  if (ME.all) unsubs.push(db.collection('att').onSnapshot(onAtt, err));
-  else visible().forEach(c => unsubs.push(db.collection('att').where('c', '==', c.id).onSnapshot(onAtt, err)));
-  if (ME.owner) unsubs.push(db.collection('teachers').onSnapshot(s => { TEACH = s.docs.map(d => ({email: d.id, ...d.data()})); if (state.tab === 'adm') render(); }, err));
-}
-
-/* ---------- لوحة المدير: التدريسيون وقائمة الطلبة ---------- */
+/* ---------- لوحة المدير: رموز التدريسيين وقائمة الطلبة ---------- */
+async function loadTeachers(){ try { TEACH = (await api('teachers')).teachers; if (state.tab === 'adm') render(); } catch(e){} }
 async function renderAdmin(){
   const rows = [...TEACH].sort((a,b) => TEACHERS.indexOf(a.name) - TEACHERS.indexOf(b.name));
-  let h = `<section class="panel adm"><div class="panelhead"><div class="lecinfo"><b>التدريسيون المعتمدون</b> · يدخل كل تدريسي بحساب Google المسجّل ببريده هنا</div></div>`;
-  h += rows.length ? `<table><thead><tr><th>البريد</th><th>التدريسي</th><th>المواد</th><th></th></tr></thead><tbody>${rows.map(t => `<tr><td class="em"></td><td>${esc(t.name)}${t.role==='head'?' <span class="pill ok">رئيس القسم</span>':''}</td><td class="num">${(t.subjects||[]).length}</td><td><button class="btn ghost" data-del="${esc(t.email)}">حذف</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">لم يُضف أي تدريسي بعد.</div>';
-  h += `<form id="addT" class="adm-form"><input id="tEmail" type="email" required placeholder="البريد الإلكتروني" dir="ltr">
-    <select id="tName" required><option value="">اختر التدريسي…</option>${TEACHERS.map(t => `<option>${esc(t)}</option>`).join('')}</select>
-    <button class="btn primary" type="submit">إضافة / تحديث</button><span id="tMsg" class="who"></span></form></section>`;
-  h += `<section class="panel adm"><div class="panelhead"><div class="lecinfo"><b>قائمة الطلبة</b> · ${ROSTER.length} طالباً محفوظون في قاعدة البيانات</div></div>
+  let h = `<section class="panel adm"><div class="panelhead"><div class="lecinfo"><b>رموز دخول التدريسيين</b> · سلّم كل تدريسي رمزه شخصياً، وعامله ككلمة سر</div></div>`;
+  h += rows.length ? `<table><thead><tr><th>التدريسي</th><th>رمز الدخول</th><th></th></tr></thead><tbody>${rows.map((t,i) => `<tr><td>${esc(t.name)}${t.name===HEAD_TEACHER?' <span class="pill ok">رئيس القسم</span>':''}</td><td><code class="mail" data-i="${i}"></code> <button class="btn ghost" data-copy="${i}" type="button">نسخ</button></td><td><button class="btn ghost" data-del="${i}" type="button">إلغاء الرمز</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">لم يُنشأ أي رمز بعد.</div>';
+  h += `<form id="addT" class="adm-form"><select id="tName" required><option value="">اختر التدريسي…</option>${TEACHERS.map(t => `<option>${esc(t)}</option>`).join('')}</select>
+    <button class="btn primary" type="submit">إنشاء رمز دخول</button><span id="tMsg" class="who"></span></form></section>`;
+  h += `<section class="panel adm"><div class="panelhead"><div class="lecinfo"><b>قائمة الطلبة</b> · ${ROSTER.length} طالباً محفوظون في جدول Google</div></div>
     <form id="rosterForm" class="adm-form"><label class="who" for="rosterFile">ملف Excel بأعمدة: التسلسل، اسم الطالب، الشعبة</label>
     <input id="rosterFile" type="file" accept=".xlsx,.xls" required><button class="btn primary" type="submit">استيراد القائمة</button><span id="rMsg" class="who"></span></form>
-    <div class="note" style="margin:0 16px 16px">أسماء الطلبة تُحفظ في Firestore فقط ولا تُرفع إلى GitHub. استيراد قائمة جديدة يستبدل القديمة، ويبقى الحضور المسجّل مرتبطاً بالتسلسل.</div></section>`;
+    <div class="note" style="margin:0 16px 16px">أسماء الطلبة تُحفظ في جدول Google الخاص بك فقط ولا تُرفع إلى GitHub. الاستيراد يستبدل القائمة السابقة، ويبقى الحضور المسجّل مرتبطاً بالتسلسل.</div></section>`;
   if (state.tab !== 'adm') return;
   $('#view').innerHTML = h;
-  $('#view').querySelectorAll('td.em').forEach((td, i) => { td.textContent = rows[i].email; td.dir = 'ltr'; });
+  $('#view').querySelectorAll('code[data-i]').forEach(el => el.textContent = rows[+el.dataset.i].code);
+  $('#view').querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+    const t = rows[+b.dataset.copy]; try { await navigator.clipboard.writeText(t.code); b.textContent = 'نُسخ'; } catch(e){ b.textContent = 'انسخه يدوياً'; } });
+  $('#view').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    b.disabled = true; try { await api('delTeacher', { code2: rows[+b.dataset.del].code }); await loadTeachers(); } catch(e){ b.disabled = false; } });
   $('#addT').addEventListener('submit', async e => {
-    e.preventDefault();
-    const email = $('#tEmail').value.trim().toLowerCase(), name = $('#tName').value;
-    try { await db.doc('teachers/' + email).set({ name, role: name === HEAD_TEACHER ? 'head' : 'teacher', subjects: subjectsOf(name) }); $('#tMsg').textContent = 'حُفظ.'; }
-    catch(err){ $('#tMsg').textContent = 'تعذّر الحفظ: تحقق من قواعد Firestore.'; }
+    e.preventDefault(); const name = $('#tName').value; if (!name) return;
+    try { const r = await api('addTeacher', { name }); $('#tMsg').textContent = `أُنشئ الرمز: ${r.code}`; await loadTeachers(); }
+    catch(err){ $('#tMsg').textContent = 'تعذّر إنشاء الرمز.'; }
   });
   $('#rosterForm').addEventListener('submit', async e => {
     e.preventDefault(); const f = $('#rosterFile').files[0]; if (!f) return;
     try {
       const wb = XLSX.read(await f.arrayBuffer());
       const rowsX = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1});
-      const list = rowsX.filter(r => Number.isFinite(+r[0]) && r[1] && /^[AB]$/i.test(String(r[2]||'').trim()))
+      const list = rowsX.filter(r => Number.isFinite(+r[0]) && r[0] !== '' && r[1] && /^[AB]$/i.test(String(r[2]||'').trim()))
         .map(r => [+r[0], String(r[1]).replace(/\s+/g,' ').trim(), String(r[2]).trim().toUpperCase()]);
       if (!list.length) { $('#rMsg').textContent = 'لم أجد صفوفاً صالحة في الملف.'; return; }
-      await db.doc('meta/roster').set({ students: list.map(([i,n,s]) => ({i, n, s})), at: new Date().toISOString() });
-      $('#rMsg').textContent = `استُورد ${list.length} طالباً.`;
+      const r = await api('importRoster', { students: list });
+      ROSTER = list; $('#rMsg').textContent = `استُورد ${r.count} طالباً.`;
     } catch(err){ $('#rMsg').textContent = 'تعذّر قراءة الملف أو حفظه.'; }
   });
 }
-document.addEventListener('click', async e => {
-  const b = e.target.closest('button[data-del]'); if (!b || !ME.owner) return;
-  b.disabled = true; try { await db.doc('teachers/' + b.dataset.del).delete(); } catch(err){ b.disabled = false; }
-});
 
 /* ---------- التشغيل ---------- */
 (function boot(){
-  if (!window.FIREBASE_CONFIG || !window.firebase){
-    showGate('<h2>الإعداد غير مكتمل</h2><p>ملف config.js غير موجود. راجع خطوات الإعداد في README.</p>'); return;
+  if (!window.APP_CONFIG || !window.APP_CONFIG.scriptUrl){
+    showGate('<h2>الإعداد غير مكتمل</h2><p>ملف config.js غير موجود أو لا يحتوي رابط الخادم. راجع خطوات الإعداد في README.</p>'); return;
   }
-  firebase.initializeApp(window.FIREBASE_CONFIG);
-  AUTH = firebase.auth(); db = firebase.firestore();
-  const ADMINS = (window.APP_ADMINS || []).map(x => x.toLowerCase());
-  let rosterUnsub = null;
-  AUTH.onAuthStateChanged(async user => {
-    if (!user) { gateLogin(); return; }
-    showGate('<h2>جارٍ التحقق من صلاحيتك…</h2>');
-    const email = (user.email || '').toLowerCase();
-    const owner = ADMINS.includes(email);
-    let t = null;
-    try { const d = await db.doc('teachers/' + email).get(); if (d.exists) t = d.data(); } catch(err){}
-    if (!owner && !t) { gateDenied(email); return; }
-    ME = { email, owner, teacher: t ? t.name : null, all: owner || (t && t.role === 'head') };
-    if (!rosterUnsub) rosterUnsub = db.doc('meta/roster').onSnapshot(d => {
-      ROSTER = d.exists ? (d.data().students || []).map(x => [x.i, x.n, x.s]) : [];
-      render();
-    }, () => {});
-    enterApp(); subscribe();
-    if (owner) $('#tabAdm').hidden = false;
-  });
+  const saved = lsGet('att-code');
+  if (saved) login(saved, true); else gateLogin();
 })();
