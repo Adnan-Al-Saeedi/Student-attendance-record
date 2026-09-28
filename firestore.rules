@@ -1,0 +1,40 @@
+rules_version = '2';
+// قواعد أمان Firestore لتطبيق سجل الحضور.
+// الصقها في: Firebase Console > Firestore Database > Rules ثم Publish.
+// غيّر قائمة المديرين في isAdmin() إلى بريد مدير التطبيق.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function em() { return request.auth.token.email.lower(); }
+    function isAdmin() { return signedIn() && em() in ['adn.ak21@gmail.com', 'adn.ak21@atu.edu.iq']; }
+    function isStaff() { return signedIn() && exists(/databases/$(database)/documents/teachers/$(em())); }
+    function me() { return get(/databases/$(database)/documents/teachers/$(em())).data; }
+    function seesAll() { return isAdmin() || (isStaff() && me().role == 'head'); }
+
+    // التدريسيون المعتمدون: يديرهم المدير فقط، وكل تدريسي يقرأ سجلّه.
+    match /teachers/{email} {
+      allow read: if isAdmin() || (signedIn() && em() == email);
+      allow write: if isAdmin();
+    }
+
+    // قائمة الطلبة: يقرؤها المعتمدون، ويكتبها المدير.
+    match /meta/{doc} {
+      allow read: if isAdmin() || isStaff();
+      allow write: if isAdmin();
+    }
+
+    // الحضور: وثيقة لكل مادة/شعبة/أسبوع. التدريسي يقرأ ويكتب مواده فقط.
+    match /att/{id} {
+      allow read: if seesAll() || (isStaff() && resource.data.c in me().subjects);
+      allow create, update: if isAdmin() || (
+        isStaff()
+        && request.resource.data.c in me().subjects
+        && id.matches(request.resource.data.c + '_[AB]_w([1-9]|1[0-5])')
+        && request.resource.data.keys().hasOnly(['m', 'c', 's', 'w', 'at', 'by'])
+        && request.resource.data.by == em()
+      );
+      allow delete: if isAdmin();
+    }
+  }
+}
